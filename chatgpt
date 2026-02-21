@@ -1,0 +1,120 @@
+#!/bin/bash
+# chatgpt - Shell wrapper for ChatGPT browser automation
+#
+# Usage:
+#   chatgpt send "Your question"                    Send and get response
+#   chatgpt send "Your question" --raw              Response only, no status
+#   chatgpt send "Your question" --new-chat         Start a new chat first
+#   chatgpt send "Your question" -o result.md       Save response to file
+#   chatgpt read                                    Read last response
+#   chatgpt read 3                                  Read last 3 responses
+#   chatgpt read --all                              Read all responses
+#   chatgpt read -o notes.md                        Save read output to file
+#   chatgpt read --all -o full-chat.md              Save entire chat to file
+#   chatgpt launch                                  Launch Chrome with debug port
+#   chatgpt status                                  Check if Chrome debug port is active
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+PORT=9222
+PROFILE_DIR="$HOME/.chrome-debug-profile"
+
+# Extract -o / --output flag from args and pass the rest through
+OUTPUT_FILE=""
+PASS_ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o|--output)
+      OUTPUT_FILE="$2"
+      shift 2
+      ;;
+    *)
+      PASS_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+set -- "${PASS_ARGS[@]+"${PASS_ARGS[@]}"}"
+
+case "${1:-help}" in
+
+  launch)
+    echo "Killing existing Chrome processes..."
+    pkill -9 -f chrome 2>/dev/null || true
+    sleep 2
+    mkdir -p "$PROFILE_DIR"
+    echo "Launching Chrome with remote debugging on port $PORT..."
+    /opt/google/chrome/chrome \
+      --user-data-dir="$PROFILE_DIR" \
+      --remote-debugging-port="$PORT" \
+      --no-first-run \
+      --no-default-browser-check &
+    for i in $(seq 1 10); do
+      if curl -s "http://localhost:$PORT/json/version" | grep -q "Browser"; then
+        echo "Chrome is ready. Debug port $PORT is active."
+        echo "Open https://chatgpt.com then use: chatgpt send \"Your question\""
+        exit 0
+      fi
+      sleep 1
+    done
+    echo "Warning: Chrome started but debug port not responding yet."
+    echo "Check with: chatgpt status"
+    ;;
+
+  status)
+    if curl -s "http://localhost:$PORT/json/version" | grep -q "Browser"; then
+      echo "Chrome debug port $PORT is active."
+      curl -s "http://localhost:$PORT/json/version" | grep '"Browser"'
+    else
+      echo "Chrome debug port $PORT is not responding."
+      echo "Run: chatgpt launch"
+    fi
+    ;;
+
+  send)
+    shift
+    if [ -n "$OUTPUT_FILE" ]; then
+      # Always use --raw when saving to file
+      RESPONSE=$(node "$SCRIPT_DIR/chatgpt.js" send "$@" --raw)
+      echo "$RESPONSE" > "$OUTPUT_FILE"
+      echo "Response saved to $OUTPUT_FILE"
+      echo "$RESPONSE"
+    else
+      node "$SCRIPT_DIR/chatgpt.js" send "$@"
+    fi
+    ;;
+
+  read)
+    shift
+    if [ -n "$OUTPUT_FILE" ]; then
+      RESPONSE=$(node "$SCRIPT_DIR/chatgpt.js" read "$@" --raw)
+      echo "$RESPONSE" > "$OUTPUT_FILE"
+      echo "Saved to $OUTPUT_FILE" >&2
+      echo "$RESPONSE"
+    else
+      node "$SCRIPT_DIR/chatgpt.js" read "$@"
+    fi
+    ;;
+
+  help|--help|-h|*)
+    cat <<'EOF'
+chatgpt - ChatGPT browser automation
+
+Commands:
+  chatgpt launch                              Launch Chrome with debug port
+  chatgpt status                              Check Chrome connection
+  chatgpt send "question"                     Send and get response
+  chatgpt send "question" --raw               Response only, no status
+  chatgpt send "question" --new-chat          Start a new chat first
+  chatgpt send "question" -o result.md        Save response to markdown file
+  chatgpt send "question" --no-prompt         Skip formatting instructions
+  chatgpt read                                Read last response
+  chatgpt read N                              Read last N responses
+  chatgpt read --all                          Read all responses
+  chatgpt read -o notes.md                    Save to markdown file
+  chatgpt read --all -o full-chat.md          Save entire chat to file
+EOF
+    ;;
+
+esac
